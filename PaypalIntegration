@@ -1,0 +1,315 @@
+<aura:component Controller="PaypalCalloutUtil" implements="force:appHostable,lightning:hasPageReference,lightning:isUrlAddressable,flexipage:availableForAllPageTypes,flexipage:availableForRecordHome,force:hasRecordId,forceCommunity:availableForAllPageTypes,force:lightningQuickAction" access="global" >
+    <aura:attribute name="EnterPoints" type="String"/>
+    <aura:attribute name="PaymentthroughPaypal" type="boolean" default="false"/>
+     <aura:attribute name="spinner" type="boolean" default="false"/>
+    
+    <aura:if isTrue="{!v.spinner}">
+            <lightning:spinner class="spins" size="large" variant="brand" alternativeText="Loading" />
+    </aura:if>
+    <div class="topdiv" style="">
+    	<div>
+        	<div  style="float:left;width:180px;">
+            	<lightning:input  label="Enter Points to Purchase" name="Enter Points" type="text" aura:id="EnterPoints" required="true" value="{!v.EnterPoints}"/>
+            </div>
+            <div  style="float:left;width:180px;margin-left:20px;">
+                <p>Paypal</p>
+                <p>
+                    <ui:inputRadio aura:id="r0"  name="Payment through Paypal"  required="true" value="{!v.PaymentthroughPaypal}"/>
+                </p>
+            	
+            </div>
+            <div style="clear:both"></div>
+        </div>
+        <div style="margin-top:10px;">
+        	<lightning:button variant="brand" label="Proceed to Pay" title="Proceed to Pay" onclick="{! c.handleClick }" />
+        </div>
+    </div>
+    
+</aura:component>
+
+--------------------------------------------------------------------------------------
+
+
+({
+	handleClick : function(component, event, helper) {
+         component.set("v.spinner", true); 
+        let PaymentthroughPaypal = component.get("v.PaymentthroughPaypal");
+        let EnterPoints =  component.get("v.EnterPoints");
+        console.log('EnterPoints',EnterPoints);
+        console.log('PaymentthroughPaypal',PaymentthroughPaypal);
+       // if(PaymentthroughPaypal ==true && (EnterPoints!= undefined || !string.isEmpty(EnterPoints))){
+            var action = component.get('c.createOrder');
+           action.setParams({ Rpoints : EnterPoints });
+        	action.setCallback(this, function(response) {
+            //store state of response
+            var state = response.getState();
+            var responseval=response.getReturnValue();
+            if(responseval!=null){
+               console.log('responseval',responseval); 
+                window.open(responseval);
+                component.set("v.spinner", false); 
+       		}
+            
+            else{
+                alert("No Response");
+                component.set("v.spinner", false); 
+            }
+                });
+        $A.enqueueAction(action);
+         
+          //  }
+       /* else{
+             var toastEvent = $A.get("e.force:showToast");
+         toastEvent.setParams({
+             title : 'Error',
+             message: 'Please Fill the required information.',
+             duration:' 5000',
+             key: 'info_alt',
+             type: 'Error',
+             mode: 'pester'
+         });
+         toastEvent.fire();
+        }*/
+	},
+    
+
+})
+
+--------------------------------------------------------------------------
+
+public class PaypalCalloutUtil{
+    private static final String GRANT_TYPE = 'client_credentials';
+    private static final String CONTENT_TYPE = 'Application/x-wwwx-www-form-urlencoded';
+    private static final String ACCESS_TOKEN_ENDPOINT = '/v1/oauth2/token';
+    private static final String CREATE_ORDER_ENDPOINT = '/v2/checkout/orders'; //TODO change endpint 
+    private static final String EXECUTE_ORDER_ENDPOINT = '/v1/payments/payment/';
+    private static final String POST_METHOD = 'POST';
+    private static Paypal_Settings__c paypalSetting = PaypalCalloutUtil.getPaypalSetting();
+    Public Static String ExecuteStr{get;set;}
+    
+    @AuraEnabled
+    public static String createOrder(Decimal Rpoints){
+        
+        List<Paypal__c> payval = [select Name,Value__c from Paypal__c where Name ='Paypal Point Value'];
+        Decimal val =  payval[0].Value__c;
+        Rpoints = Rpoints*val;
+        
+        OauthResponse oauth = PaypalCalloutUtil.getAccessToken();    
+        HttpRequest HttpReq = new HttpRequest();
+        Http http = new Http();                                                    
+        //HttpReq.setEndPoint(paypalSetting.Endpoint__c+CREATE_ORDER_ENDPOINT);
+        HttpReq.setEndPoint(paypalSetting.Endpoint__c+EXECUTE_ORDER_ENDPOINT);
+        httpReq.setMethod(POST_METHOD);
+        httpReq.setHeader('Authorization', 'Bearer '+oauth.access_token);
+        httpReq.setHeader('Content-Type' , 'application/json');
+        httpReq.setBody('{ "intent": "sale", "payer": { "payment_method": "paypal" }, "transactions": [{ "amount": { "total":'+Rpoints+', "currency": "USD", "details": { "tax": "0.00", "shipping": "0.00", "handling_fee": "0.00", "shipping_discount": "0.00", "insurance": "0.00" } } }], "redirect_urls": { "return_url": "https://maytronics--dev5.lightning.force.com/apex/PaypalCallback", "cancel_url": "https://example.com/cancel" } }'); //TODO change body to send paymanet details 
+        httpReq.setTimeOut(120000); 
+        HTTPResponse res = http.send(HttpReq);
+           
+        if(res.getStatusCode() == 201 || res.getStatusCode() == 200){ 
+            system.debug('--->>>>>>>>>>>'+res.getBody()); //TODO handel response to update fields 
+            OrderResponse odRes = (OrderResponse)JSON.deserialize(res.getBody(),OrderResponse.class);
+            OrderResponse obj = new OrderResponse();
+            obj.status = odRes.status;
+            obj.links = odRes.links;
+            list<links> links=odRes.links;
+            String ResponseStr;
+            //String ExecuteStr;
+            
+            for(integer i=0;i<links.size();i++){
+                if(odRes.links[i].rel=='approval_url'){
+                   ResponseStr = odRes.links[i].href;
+                }
+                if(odRes.links[i].rel=='execute'){
+                    ExecuteStr = odRes.links[i].href;
+                }
+            }
+            system.debug('--->>>>>>>>>>>'+ResponseStr);
+            
+            return ResponseStr;
+            
+        } else{
+            throw new PaypalException(res.getStatusCode() +':'+ res.getBody());
+           // return null;
+        }  
+      // return null; 
+       //ExecutePaypal(ExecuteStr); 
+    }
+    
+    @AuraEnabled
+    public static void ExecutePaypal(){ 
+        system.debug('---In Execute Method---');
+        User u = [select id,Name from User where id=:userInfo.getUserId()];
+        system.debug('--USer--'+u);
+        
+        OauthResponse oauth = PaypalCalloutUtil.getAccessToken();
+        String PayIdURl = paypalSetting.Endpoint__c+EXECUTE_ORDER_ENDPOINT+apexpages.currentpage().getparameters().get('paymentId')+'/execute';
+        
+        String PayerIDInfo = apexpages.currentpage().getparameters().get('PayerID');
+        system.debug('Hostttt ---'+apexpages.currentpage().getparameters().get('PayerID')+' oauth---'+oauth);
+        HttpRequest HttpReq = new HttpRequest();
+        Http http = new Http(); 
+        HttpReq.setEndPoint(PayIdURl);
+        httpReq.setMethod(POST_METHOD);
+        httpReq.setHeader('Authorization', 'Bearer '+oauth.access_token);
+        httpReq.setHeader('Content-Type' , 'application/json');
+        httpReq.setBody('{ "payer_id": "'+PayerIDInfo+'" }');
+        httpReq.setTimeOut(120000); 
+        system.debug('request values---'+HttpReq+' ---bodyy--- '+httpReq.getBody()+' ---'+PayerIDInfo);
+        HTTPResponse res = http.send(HttpReq);
+        if(res.getStatusCode() == 201 || res.getStatusCode() == 200){ 
+            System.debug('Payment Successfull');
+            system.debug('response success--->'+res.getBody());
+            
+            JsonParser PayRes = (JsonParser)JSON.deserialize(res.getBody(),JsonParser.class);
+            JsonParser obj = new JsonParser();
+            //list<transactions> transactions = PayRes.transactions;
+            system.debug('----totalamount transaction'+PayRes.payer.payer_info.first_name);
+            list<transactions> transactions = PayRes.transactions;
+            Decimal amountPaid = Decimal.ValueOf(PayRes.transactions[0].amount.total);
+            String recpName = PayRes.payer.payer_info.first_name +' '+ PayRes.payer.payer_info.last_name;
+            PaypalPayeeInfo.createEventonPay(amountPaid);
+            
+            
+        }
+        else{
+            throw new PaypalException(res.getStatusCode() +':'+ res.getBody());
+            //system.Debug('exception---'+res.getBody());
+        } 
+
+    }
+    
+    @AuraEnabled
+    public static OauthResponse getAccessToken(){        
+        String authorizationKey = EncodingUtil.base64Encode(Blob.valueOf(paypalSetting.Client_Id__c+':'+paypalSetting.Client_Secret__c));
+        
+        HttpRequest HttpReq = new HttpRequest();
+        Http http = new Http();                                                    
+        HttpReq.setEndPoint(paypalSetting.Endpoint__c+ACCESS_TOKEN_ENDPOINT);
+        httpReq.setMethod(POST_METHOD);
+        httpReq.setHeader('Authorization', 'Basic '+authorizationKey);
+        httpReq.setHeader('Content-Type' , CONTENT_TYPE);
+        httpReq.setBody('grant_type='+GRANT_TYPE);
+        httpReq.setTimeOut(120000); 
+        HTTPResponse res = http.send(HttpReq);   
+        if(res.getStatusCode() == 200){
+            OauthResponse oauthResponse = (OauthResponse)JSON.deserialize(res.getBody(),OauthResponse.class);  
+            system.debug('Response: '+oauthResponse);
+            return oauthResponse;
+        } else{
+            throw new PaypalException(res.getStatusCode() +':'+ res.getBody());
+        }  
+    }  
+
+    public static Paypal_Settings__c getPaypalSetting(){
+        List<Paypal_Settings__c> paypalSettings = Paypal_Settings__c.getAll().values();
+        if (!paypalSettings.isEmpty()){
+            return paypalSettings.get(0);
+        } else{
+            throw new PaypalException('Paypal configuartion is missing in Custom settings!');
+        }        
+    }
+                                                            
+    public class OauthResponse{
+        String id;
+        String instance_url;
+        String access_token;
+        String issued_at;
+        String signature;
+    } 
+    
+    public class OrderResponse{
+        public String status{get;set;}
+        public list<links> links{get;set;}
+        public String id{get;set;}
+    
+    } 
+    public class links{
+        public String rel{get;set;}
+        public String href{get;set;}
+        public String method{get;set;}
+    }  
+    
+    public class JsonParser{
+    public list<transactions> transactions{get;set;}
+    public payer payer{get;set;}
+    public list<String> failed_transactions{get;set;}
+    public String cart{get;set;}
+    public String create_time{get;set;}
+    public String state{get;set;}
+    public String update_time{get;set;}
+    public String intent{get;set;}
+    public list<links> links{get;set;}
+    public String id{get;set;}
+    }
+    public class transactions{
+    public item_list item_list{get;set;}
+    public payee payee{get;set;}
+    public list<related_resources> related_resources{get;set;}
+    public amount amount{get;set;}
+  }
+  public class transaction_fee{
+    public String value{get;set;}
+  }
+  public class shipping_address{
+    public String country_code{get;set;}
+    public String state{get;set;}
+    public String postal_code{get;set;}
+    public String city{get;set;}
+    public String line1{get;set;}
+    
+    public String recipient_name{get;set;}
+  }
+  public class sale{
+    public String id{get;set;}
+    public String reason_code{get;set;}
+    public String payment_mode{get;set;}
+    public String protection_eligibility{get;set;}
+    public amount amount{get;set;}
+    public transaction_fee transaction_fee{get;set;}
+    public String state{get;set;}
+    public String parent_payment{get;set;}
+    public list<links> links{get;set;}
+    public String update_time{get;set;}
+    public String create_time{get;set;}
+  }
+  public class related_resources{
+    public sale sale{get;set;}
+  }
+  public class payer_info{
+    public shipping_address shipping_address{get;set;}
+    public String last_name{get;set;}
+    public String first_name{get;set;}
+    public String payer_id{get;set;}
+    public String email{get;set;}
+    public String country_code{get;set;}
+  }
+  public class payer{
+    public String status{get;set;}
+    public payer_info payer_info{get;set;}
+    public String payment_method{get;set;}
+  }
+  public class payee{
+    public String email{get;set;}
+    public String merchant_id{get;set;}
+  }
+  
+  public class item_list{
+    public shipping_address shipping_address{get;set;}
+  }
+  public class details{
+    public String subtotal{get;set;}
+    public String discount{get;set;}
+    public String tax{get;set;}
+    public String shipping_discount{get;set;}
+    public String shipping{get;set;}
+    public String handling_fee{get;set;}
+    public String insurance{get;set;}
+  }
+  public class amount{
+    public String total{get;set;}
+    public details details{get;set;}
+  }
+
+
+}
